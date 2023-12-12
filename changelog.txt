@@ -1,4 +1,9 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.0.3
+Date: 2023-12-12
+  Features:
+    - Added automatic circuit connection feature when pasting machine settings to an inserter.
+---------------------------------------------------------------------------------------------------
 Version: 1.0.2
 Date: 2023-12-09
   Features:
