@@ -87,6 +87,16 @@ local function connect_neighbor_if_unconnected(entity_connect_from, entity_conne
     -- ... is if there isn't a current connection AND no new connection could be made.
     if (not entity_connect_to) then return false end
 
+    -- Doing this check prevent an instance of mod crashing with new loader/belt logic
+    -- >> When loader was pointing out of building (not circuit connectable) and you try to paste, would crash
+    if (
+          entity_connect_to.prototype.type ~= "container"
+          and entity_connect_to.prototype.type ~= "logistic-container"
+        )
+    then
+      return false
+    end
+
     entity_connect_from.connect_neighbour {
       wire = defines.wire_type.green,
       target_entity = entity_connect_to
@@ -241,10 +251,6 @@ local function transport_belt_paste_logic(event, belt)
   -- Determine # of stacks for inserter limit
   -- https://lua-api.factorio.com/latest/classes/LuaTransportBeltControlBehavior.html
 
-  -- Might not need the below two conditions
-  -- circuit_condition.read_contents = false
-  -- circuit_condition.enable_disable = true
-
   set_enable_condition(event, belt, _item_name, circuit_condition_comparator)
 end
 
@@ -262,65 +268,6 @@ local function assembler_copy_logic(entity)
     return false
   end
 
-  return set_item_name_and_stack(item_name)
-end
-
-local function container_copy_logic(entity)
-  -- Nested function for better organization
-  local function container_get_inventory_item_name(container)
-    local container_inventory = container.get_inventory(defines.inventory.chest)
-    local inventory_contents = container_inventory.get_contents()
-
-    local item_names = {}
-    for k, _ in pairs(inventory_contents) do
-      table.insert(item_names, k)
-    end
-    if (#item_names == 1)
-    then
-      return item_names[1]
-    else
-      return nil
-    end
-  end
-
-  clear_copied_info()
-
-  local logistic_mode = entity.prototype.logistic_mode
-  if (not logistic_mode)
-  then
-    local item_name = container_get_inventory_item_name(entity)
-    return set_item_name_and_stack(item_name)
-  end
-
-  -- Storage Chests
-  if (logistic_mode == "storage" and entity["storage_filter"])
-  then
-    local item_name = entity["storage_filter"]
-    return set_item_name_and_stack(item_name)
-  end
-
-  -- Buffer / Requester Chests
-  if (logistic_mode == "requester" or logistic_mode == "buffer")
-  then
-    local requests = {}
-    local request_slot_index = entity.request_slot_count
-    while (request_slot_index > 0) do
-      local item_stack = entity.get_request_slot(request_slot_index)
-      if (item_stack)
-      then
-        table.insert(requests, (item_stack.name or item_stack))
-      end
-      request_slot_index = request_slot_index - 1
-    end
-
-    if (#requests == 1)
-    then
-      return set_item_name_and_stack(requests[1])
-    end
-  end
-
-  -- Logistic Chest fallback
-  local item_name = container_get_inventory_item_name(entity)
   return set_item_name_and_stack(item_name)
 end
 
