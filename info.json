@@ -1,11 +1,11 @@
 {
   "name": "PasteMoreLogisticSettings",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "title": "Paste More Logistic Settings",
   "author": "Taurunti",
   "contact": "thetaurunti@gmail.com",
   "homepage": "https://github.com/TheTaurunti/factorio-pastemorelogistic",
-  "factorio_version": "1.1",
-  "dependencies": ["base >= 1.1"],
+  "factorio_version": "2.0",
+  "dependencies": ["base >= 2.0"],
   "description": "Groundbreaking QoL mod that allows you to copy crafting machine settings and paste them onto inserters and logistic chests, to ease the repetitive act of setting filters and limits. Supports all modded logistic containers."
 }
