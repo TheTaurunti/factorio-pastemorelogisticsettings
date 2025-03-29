@@ -8,20 +8,26 @@ local _item_quality_name = nil
 
 local _item_flying_text_name = nil
 
+local _recipe_name = nil
+
+
 local function clear_copied_info()
   _item_name = nil
   _item_stack_size = nil
   _item_quality_name = nil
   _item_flying_text_name = nil
+  _recipe_name = nil
 end
 
-local function set_item_name_and_stack(item_name, quality_name)
+local function set_item_name_and_stack(item_name, quality_name, recipe_name)
   if (not item_name) then return false end
   if (prototypes.item[item_name])
   then
     _item_name = item_name
     _item_stack_size = prototypes.item[_item_name].stack_size
     _item_quality_name = quality_name
+
+    _recipe_name = recipe_name
 
     local quality_name_part = _item_quality_name and (",quality=" .. _item_quality_name) or ""
     _item_flying_text_name = "[item=" .. _item_name .. quality_name_part .. "]"
@@ -198,6 +204,21 @@ local function inserter_paste_logic(event, inserter)
     return (#at_pickup > 0 and at_pickup[1]) or nil
   end
 
+  -- Firstly, set filters to override the vanilla behavior of ingredients-as-filters
+  local num_filters = inserter.filter_slot_count
+  if (num_filters and num_filters > 0)
+  then
+    -- first filter set to output item
+    inserter.set_filter(1, { name = _item_name, quality = _item_quality_name })
+
+    -- clear remaining filters
+    for i = 2, num_filters, 1 do
+      inserter.set_filter(i, nil)
+    end
+
+    inserter.inserter_filter_mode = "whitelist"
+  end
+
   -- Check #1 - Can I work with this inserter?
   local pickup_drop_positions = inserter_get_real_target_positions(inserter)
   if (not pickup_drop_positions) then return end
@@ -215,12 +236,6 @@ local function inserter_paste_logic(event, inserter)
 
   -- Set the circuit condition
   set_enable_condition(event, inserter, circuit_condition_comparator)
-
-  -- Need to clear filters because in 2.0 copy pasting from assembler will set filters to ingredients.
-  -- It's cool, but completely and entirely against what this mod does - enable/disable condition set to RESULT
-  -- OH MY GOD WHY CAN'T I CHANGE THE DAMN FILTERS I TRIED EVERYTHING
-  -- >> Best I can do is blacklist the ingredients instead of whitelist. Not ideal but works.	
-  inserter.inserter_filter_mode = "blacklist"
 end
 
 
@@ -265,6 +280,84 @@ local function transport_belt_paste_logic(event, belt)
   set_enable_condition(event, belt, circuit_condition_comparator)
 end
 
+-- Setting combinator outputs as ingredients of the recipe
+local function combinator_paste_logic(event, combinator)
+  local _max_combinator_paste_variants = 3
+  local function _get_next_combinator_value_set(control_behavior)
+    local num_sections = control_behavior.sections_count
+    if (num_sections < 1) then return 1 end
+
+    local section_one_slot_one = control_behavior.get_section(1).get_slot(1)
+    if (section_one_slot_one == nil) then return 1 end
+    if (section_one_slot_one.value == nil) then return 1 end
+
+    local to_return = ((section_one_slot_one.value.name == "blueprint") and section_one_slot_one.min + 1) or 1
+    return (to_return > _max_combinator_paste_variants) and 1 or to_return
+  end
+  local function _set_ingredients_in_section(ingredients, section, quality_to_set, override_amount_as_one)
+    local index = 1
+
+    for _, ingred in ipairs(ingredients) do
+      -- Not limiting to items for 2 reasons:
+      --  1) Does not matter when setting filters
+      --  2) If using combinators as ingred reminders, fluids are useful to show.
+      section.set_slot(index, {
+        min = override_amount_as_one and 1 or ingred.amount,
+        value = { type = ingred.type, name = ingred.name, quality = quality_to_set }
+      })
+      index = index + 1
+    end
+  end
+
+  if (_recipe_name == nil) then return end
+  local ingredients = prototypes.recipe[_recipe_name].ingredients
+  if (ingredients == nil or #ingredients == 0) then return end
+
+  -- https://lua-api.factorio.com/stable/classes/LuaConstantCombinatorControlBehavior.html
+  local combinator_control_behavior = combinator.get_control_behavior()
+  local next_value_set = _get_next_combinator_value_set(combinator_control_behavior)
+
+  -- delete all sections
+  for i = combinator_control_behavior.sections_count, 1, -1 do
+    combinator_control_behavior.remove_section(i)
+  end
+
+  -- a metadata section for this mod
+  local mod_section = combinator_control_behavior.add_section()
+  mod_section.set_slot(1,
+    { min = next_value_set, value = { type = "item", name = "blueprint", quality = _item_quality_name } })
+  mod_section.active = false
+
+  -- base case, setting blank combinator to ingredients
+  if (next_value_set == 1) then
+    local ingred_section = combinator_control_behavior.add_section()
+    _set_ingredients_in_section(ingredients, ingred_section, _item_quality_name, false)
+  else
+    -- non-base case: get all quality permutations
+    local is_stack_inserter_util = (next_value_set == 2)
+    for qual_name, _ in pairs(prototypes.quality) do
+      if (qual_name ~= "quality-unknown") then
+        local qual_section = combinator_control_behavior.add_section()
+        _set_ingredients_in_section(ingredients, qual_section, qual_name, true)
+
+        if (is_stack_inserter_util)
+        then
+          if (qual_name == _item_quality_name)
+          then
+            qual_section.multiplier = -_MAGIC_NUMBER_BUFFER_REQUEST_QUANTITY
+          else
+            qual_section.multiplier = -15
+          end
+        end
+      end
+    end
+  end
+
+  -- Sections have been set, show a message for user
+  local variant_text = "(" .. next_value_set .. "/" .. _max_combinator_paste_variants .. ")"
+  local text = "[item=constant-combinator]" .. _item_flying_text_name .. "[virtual-signal=signal-green]" .. variant_text
+  create_flying_text(game.players[event.player_index], text, combinator.position)
+end
 
 local function assembler_copy_logic(entity)
   clear_copied_info()
@@ -279,7 +372,7 @@ local function assembler_copy_logic(entity)
     return false
   end
 
-  return set_item_name_and_stack(products[1].name, quality.name)
+  return set_item_name_and_stack(products[1].name, quality.name, recipe.name)
 end
 
 
@@ -331,14 +424,17 @@ script.on_event("pmls-paste", function(event)
   local entity = game.players[event.player_index].selected
   if (not entity) then return end
 
-  if (entity.prototype.type == "inserter")
+
+  if (entity.prototype.type == "constant-combinator")
   then
-    inserter_paste_logic(event, entity)
+    combinator_paste_logic(event, entity)
+    return
   end
 
   if (entity.prototype.type == "transport-belt")
   then
     transport_belt_paste_logic(event, entity)
+    return
   end
 
   -- https://lua-api.factorio.com/latest/classes/LuaEntityPrototype.html#logistic_mode
@@ -364,6 +460,16 @@ script.on_event(defines.events.on_entity_settings_pasted, function(event)
 
   local entity = game.players[event.player_index].selected
   if (not entity) then return end
+
+  -- This has to be done here rather than in pmls-paste, otherwise...
+  -- ... vanilla behavior of inserter filters set as ingredients occurs
+  if (entity.prototype.type == "inserter")
+  then
+    inserter_paste_logic(event, entity)
+    return
+  end
+
+
 
   -- https://lua-api.factorio.com/latest/classes/LuaEntityPrototype.html#logistic_mode
   local logistic_mode = entity.prototype.logistic_mode

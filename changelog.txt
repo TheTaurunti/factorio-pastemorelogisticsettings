@@ -2,9 +2,8 @@
 Version: 1.0.8
 Date: 2025-03-29
   Features:
-    - We are back to PMLS babyyyyyy
     - Pasting onto inserters now properly sets filters as the assembler's output
-    - Pasting onto constant combinators sets values equal to assembler's ingredients. Pasting again sets this but with quality settings as well. Useful with stack inserters.
+    - Pasting onto constant combinators sets values equal to assembler's ingredients. Repeat pasting includes a section for each quality in the game. Useful for stack inserters.
 ---------------------------------------------------------------------------------------------------
 Version: 1.0.7
 Date: 2025-01-23
