@@ -282,7 +282,7 @@ end
 
 -- Setting combinator outputs as ingredients of the recipe
 local function combinator_paste_logic(event, combinator)
-  local _max_combinator_paste_variants = 3
+  local _max_combinator_paste_variants = 2
   local function _get_next_combinator_value_set(control_behavior)
     local num_sections = control_behavior.sections_count
     if (num_sections < 1) then return 1 end
@@ -334,20 +334,16 @@ local function combinator_paste_logic(event, combinator)
     _set_ingredients_in_section(ingredients, ingred_section, _item_quality_name, false)
   else
     -- non-base case: get all quality permutations
-    local is_stack_inserter_util = (next_value_set == 2)
     for qual_name, _ in pairs(prototypes.quality) do
       if (qual_name ~= "quality-unknown") then
         local qual_section = combinator_control_behavior.add_section()
         _set_ingredients_in_section(ingredients, qual_section, qual_name, true)
 
-        if (is_stack_inserter_util)
+        if (qual_name == _item_quality_name)
         then
-          if (qual_name == _item_quality_name)
-          then
-            qual_section.multiplier = -_MAGIC_NUMBER_BUFFER_REQUEST_QUANTITY
-          else
-            qual_section.multiplier = -15
-          end
+          qual_section.multiplier = -_MAGIC_NUMBER_BUFFER_REQUEST_QUANTITY
+        else
+          qual_section.multiplier = -15
         end
       end
     end
