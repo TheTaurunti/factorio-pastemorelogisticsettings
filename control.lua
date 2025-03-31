@@ -2,41 +2,32 @@
 -- Set up variables for tracking copied settings
 -- =============================================
 
-local _item_name = nil
-local _item_stack_size = nil
-local _item_quality_name = nil
+local _is_info_copied = false
 
+local _recipe = nil
+local _has_ingredients = nil
+local _item_product_prototypes = nil
+local _current_product_index = nil
+
+local _quality_name = nil
 local _item_flying_text_name = nil
 
-local _recipe_name = nil
+local _last_copied_from = nil
 
 
 local function clear_copied_info()
-  _item_name = nil
-  _item_stack_size = nil
-  _item_quality_name = nil
+  _is_info_copied = false
+
+  _recipe = nil
+  _has_ingredients = nil
+  _item_product_prototypes = nil
+  _current_product_index = nil
+
+  _quality_name = nil
   _item_flying_text_name = nil
-  _recipe_name = nil
+
+  _last_copied_from = nil
 end
-
-local function set_item_name_and_stack(item_name, quality_name, recipe_name)
-  if (not item_name) then return false end
-  if (prototypes.item[item_name])
-  then
-    _item_name = item_name
-    _item_stack_size = prototypes.item[_item_name].stack_size
-    _item_quality_name = quality_name
-
-    _recipe_name = recipe_name
-
-    local quality_name_part = _item_quality_name and (",quality=" .. _item_quality_name) or ""
-    _item_flying_text_name = "[item=" .. _item_name .. quality_name_part .. "]"
-    return true
-  else
-    return false
-  end
-end
-
 
 -- ================================
 -- Hardcoded Numbers Initialization
@@ -62,8 +53,8 @@ local _LOADER_ENTITY_TYPES = {
 -- Utility Functions
 -- =================
 
-local function create_flying_text(player, text_string, display_position)
-  player.create_local_flying_text({ text = text_string, position = display_position })
+local function create_flying_text(event, text_string, display_position)
+  game.players[event.player_index].create_local_flying_text({ text = text_string, position = display_position })
 end
 
 local function standardize_vector(vector)
@@ -119,49 +110,54 @@ end
 
 
 local function set_enable_condition(event, entity, circuit_condition_comparator)
-  -- Nested utility function for better organization
-  local function get_next_stack_amount(current_stacks)
-    local immediate_lookup = _MAGIC_NUMBER_STACK_LIMIT_PROGRESSION[current_stacks]
-    if (immediate_lookup) then return immediate_lookup end
-
-    local closest = { index = 1, diff = 1000 }
-    for k, v in pairs(_MAGIC_NUMBER_STACK_LIMIT_PROGRESSION) do
-      local difference = math.abs(current_stacks - v)
-      if (difference <= closest.diff)
-      then
-        closest.index = k
-        closest.diff = difference
-      end
-    end
-
-    return _MAGIC_NUMBER_STACK_LIMIT_PROGRESSION[closest.index]
-  end
-
   -- https://lua-api.factorio.com/latest/classes/LuaGenericOnOffControlBehavior.html
   local circuit_settings = entity.get_or_create_control_behavior()
   local enable_condition = circuit_settings.circuit_condition
 
+  local current_product_proto = _item_product_prototypes[_current_product_index]
+
   local stacks_to_limit = 1
-  if (enable_condition and enable_condition.first_signal and enable_condition.first_signal.name == _item_name)
+  if (enable_condition and enable_condition.first_signal)
   then
-    local current_stacks = math.floor(enable_condition.constant / _item_stack_size)
-    stacks_to_limit = get_next_stack_amount(current_stacks)
+    local name_matches = (enable_condition.first_signal.name == current_product_proto.name)
+    local qual_matches = (enable_condition.first_signal.quality == nil or enable_condition.first_signal.quality == _quality_name)
+
+    if (name_matches and qual_matches)
+    then
+      local current_stacks = math.floor(enable_condition.constant / current_product_proto.stack_size)
+      stacks_to_limit = _MAGIC_NUMBER_STACK_LIMIT_PROGRESSION[current_stacks] or 1
+    end
   end
-  local circuit_limit_value = stacks_to_limit * _item_stack_size
+  local circuit_limit_value = stacks_to_limit * current_product_proto.stack_size
 
   -- Set the value
   circuit_settings.circuit_enable_disable = true
   circuit_settings.circuit_condition = {
-    first_signal = { type = "item", name = _item_name, quality = _item_quality_name },
+    first_signal = { type = "item", name = current_product_proto.name, quality = _quality_name },
     comparator = circuit_condition_comparator,
     constant = circuit_limit_value
   }
 
   local floating_text = _item_flying_text_name .. " " .. circuit_condition_comparator .. " " .. circuit_limit_value
-  create_flying_text(game.players[event.player_index], floating_text, entity.position)
+  create_flying_text(event, floating_text, entity.position)
 end
 
+local function format_flying_text_item_name(item_name, quality_name)
+  local quality_name_part = quality_name and (",quality=" .. quality_name) or ""
+  return "[item=" .. item_name .. quality_name_part .. "]"
+end
 
+local function recipe_has_ingredients(recipe_prototype)
+  local ingredients = recipe_prototype.ingredients
+  if (ingredients == nil) then return false end
+  return #ingredients > 0
+end
+
+local function recipe_has_products(recipe_prototype)
+  local products = recipe_prototype.products
+  if (products == nil) then return false end
+  return #products > 0
+end
 
 -- ===============
 -- Main Logic Here
@@ -209,7 +205,7 @@ local function inserter_paste_logic(event, inserter)
   if (num_filters and num_filters > 0)
   then
     -- first filter set to output item
-    inserter.set_filter(1, { name = _item_name, quality = _item_quality_name })
+    inserter.set_filter(1, { name = _item_product_prototypes[_current_product_index].name, quality = _quality_name })
 
     -- clear remaining filters
     for i = 2, num_filters, 1 do
@@ -282,7 +278,8 @@ end
 
 -- Setting combinator outputs as ingredients of the recipe
 local function combinator_paste_logic(event, combinator)
-  local _max_combinator_paste_variants = 2
+  local _max_combinator_paste_variants = 3
+
   local function _get_next_combinator_value_set(control_behavior)
     local num_sections = control_behavior.sections_count
     if (num_sections < 1) then return 1 end
@@ -294,7 +291,7 @@ local function combinator_paste_logic(event, combinator)
     local to_return = ((section_one_slot_one.value.name == "blueprint") and section_one_slot_one.min + 1) or 1
     return (to_return > _max_combinator_paste_variants) and 1 or to_return
   end
-  local function _set_ingredients_in_section(ingredients, section, quality_to_set, override_amount_as_one)
+  local function _set_signals_in_section(ingredients, section, quality_to_set, override_amount_as_one)
     local index = 1
 
     for _, ingred in ipairs(ingredients) do
@@ -309,9 +306,9 @@ local function combinator_paste_logic(event, combinator)
     end
   end
 
-  if (_recipe_name == nil) then return end
-  local ingredients = prototypes.recipe[_recipe_name].ingredients
-  if (ingredients == nil or #ingredients == 0) then return end
+  -- Begin function body here (util functions above)
+  if (not _is_info_copied) then return end
+  local ingredients = (_has_ingredients and _recipe.prototype.ingredients) or {}
 
   -- https://lua-api.factorio.com/stable/classes/LuaConstantCombinatorControlBehavior.html
   local combinator_control_behavior = combinator.get_control_behavior()
@@ -324,51 +321,94 @@ local function combinator_paste_logic(event, combinator)
 
   -- a metadata section for this mod
   local mod_section = combinator_control_behavior.add_section()
-  mod_section.set_slot(1,
-    { min = next_value_set, value = { type = "item", name = "blueprint", quality = _item_quality_name } })
   mod_section.active = false
+  mod_section.set_slot(1, {
+    min = next_value_set,
+    value = {
+      type = "item",
+      name = "blueprint",
+      quality = _quality_name
+    }
+  })
+
+  -- Creating text here to simplify following code
+  local variant_text = "(" .. next_value_set .. "/" .. _max_combinator_paste_variants .. ")"
+  local text = "[item=constant-combinator]" .. "[virtual-signal=signal-green]" .. variant_text
+  create_flying_text(event, text, combinator.position)
 
   -- base case, setting blank combinator to ingredients
   if (next_value_set == 1) then
     local ingred_section = combinator_control_behavior.add_section()
-    _set_ingredients_in_section(ingredients, ingred_section, _item_quality_name, false)
-  else
-    -- non-base case: get all quality permutations
-    for qual_name, _ in pairs(prototypes.quality) do
-      if (qual_name ~= "quality-unknown") then
-        local qual_section = combinator_control_behavior.add_section()
-        _set_ingredients_in_section(ingredients, qual_section, qual_name, true)
-
-        if (qual_name == _item_quality_name)
-        then
-          qual_section.multiplier = -_MAGIC_NUMBER_BUFFER_REQUEST_QUANTITY
-        else
-          qual_section.multiplier = -15
-        end
-      end
-    end
+    _set_signals_in_section(ingredients, ingred_section, _quality_name, false)
+    return
   end
 
-  -- Sections have been set, show a message for user
-  local variant_text = "(" .. next_value_set .. "/" .. _max_combinator_paste_variants .. ")"
-  local text = "[item=constant-combinator]" .. _item_flying_text_name .. "[virtual-signal=signal-green]" .. variant_text
-  create_flying_text(game.players[event.player_index], text, combinator.position)
+  -- non-base case(s): get all quality permutations for inputs/outputs
+  local inputs_outputs_to_use = (next_value_set == 2 and ingredients) or _recipe.prototype.products
+  for qual_name, _ in pairs(prototypes.quality) do
+    if (qual_name ~= "quality-unknown") then
+      local qual_section = combinator_control_behavior.add_section()
+      _set_signals_in_section(inputs_outputs_to_use, qual_section, qual_name, true)
+      qual_section.multiplier = -15
+    end
+  end
 end
 
-local function assembler_copy_logic(entity)
-  clear_copied_info()
-
+local function entity_with_recipe_copy_logic(entity)
   -- Returns "LuaRecipe, LuaQualityPrototype"
   local recipe, quality = entity.get_recipe()
-  if (not recipe) then return false end
 
-  local products = recipe.prototype.products
-  if (products and #products ~= 1)
-  then
+  -- No recipe set, good to reset data
+  if (not recipe) then
+    clear_copied_info()
     return false
   end
 
-  return set_item_name_and_stack(products[1].name, quality.name, recipe.name)
+  -- when re-copying from machine, rotate to next product
+  if (_is_info_copied and (recipe.prototype.name == _recipe.prototype.name) and (quality.name == _quality_name))
+  then
+    -- fmod here is essentially the modulo operator
+    -- https://stackoverflow.com/questions/9695697/lua-replacement-for-the-operator
+    _current_product_index = math.fmod(_current_product_index, #_item_product_prototypes) + 1
+    _item_flying_text_name = format_flying_text_item_name(_item_product_prototypes[_current_product_index].name,
+      _quality_name)
+    return true
+  end
+
+
+  -- If recipe has no output, there is no reason to copy it's information
+  if (not recipe_has_products(recipe.prototype))
+  then
+    clear_copied_info()
+    return false
+  end
+
+
+  -- Now record the information of the recipe
+  local item_products = {}
+  for _, product in ipairs(recipe.prototype.products) do
+    if (product.type == "item")
+    then
+      table.insert(item_products, prototypes.item[product.name])
+    end
+  end
+
+  _is_info_copied = true
+
+  _recipe = recipe
+  _has_ingredients = recipe_has_ingredients(recipe.prototype)
+
+  _item_product_prototypes = item_products
+  _current_product_index = 1
+
+  _quality_name = quality.name
+  _item_flying_text_name = format_flying_text_item_name(_item_product_prototypes[_current_product_index].name,
+    _quality_name)
+
+
+  _last_copied_from = entity.type
+
+  return true
 end
 
 
@@ -377,7 +417,8 @@ end
 -- =================
 
 local _VALID_PMLS_COPY_TARGETS = {
-  ["assembling-machine"] = assembler_copy_logic
+  ["assembling-machine"] = entity_with_recipe_copy_logic,
+  ["furnace"] = entity_with_recipe_copy_logic
 
 
   -- After playing around with it, I've found that copying
@@ -403,23 +444,31 @@ script.on_event("pmls-copy", function(event)
 
 
   local settings_copy_was_successful = settings_copy_function(entity)
-  local text = (
-    settings_copy_was_successful
-    and (_item_flying_text_name .. "[virtual-signal=signal-green]")
-    or "[virtual-signal=signal-red]"
-  )
+  local text = "[virtual-signal=signal-red]"
+  if (settings_copy_was_successful)
+  then
+    local variant_text = "(" .. _current_product_index .. "/" .. #_item_product_prototypes .. ")"
+    text = _item_flying_text_name .. "[virtual-signal=signal-green]" .. variant_text
+  end
 
   -- Give player feedback
-  create_flying_text(game.players[event.player_index], text, entity.position)
+  create_flying_text(event, text, entity.position)
 end)
 
 
 script.on_event("pmls-paste", function(event)
-  if (_item_name == nil or _item_stack_size == nil) then return end
+  if (not _is_info_copied or _current_product_index == nil) then return end
 
   local entity = game.players[event.player_index].selected
   if (not entity) then return end
 
+  if (_last_copied_from == "furnace") then
+    if (entity.prototype.type == "inserter")
+    then
+      inserter_paste_logic(event, entity)
+      return
+    end
+  end
 
   if (entity.prototype.type == "constant-combinator")
   then
@@ -437,7 +486,7 @@ script.on_event("pmls-paste", function(event)
   local logistic_mode = entity.prototype.logistic_mode
   if (logistic_mode and (logistic_mode == "storage"))
   then
-    entity["storage_filter"] = prototypes.item[_item_name]
+    entity["storage_filter"] = { name = _item_product_prototypes[_current_product_index].name, quality = _quality_name }
 
     -- This function is what clears locked slots
     -- https://lua-api.factorio.com/latest/classes/LuaInventory.html#set_bar
@@ -445,26 +494,32 @@ script.on_event("pmls-paste", function(event)
     chest_inventory.set_bar()
 
     local text = "[item=storage-chest]" .. _item_flying_text_name
-    create_flying_text(game.players[event.player_index], text, entity.position)
+    create_flying_text(event, text, entity.position)
   end
 end)
 
 
 -- https://lua-api.factorio.com/latest/events.html#on_entity_settings_pasted
 script.on_event(defines.events.on_entity_settings_pasted, function(event)
-  if (_item_name == nil or _item_stack_size == nil) then return end
+  game.print("here")
+  if (not _is_info_copied) then return end
+
 
   local entity = game.players[event.player_index].selected
   if (not entity) then return end
 
-  -- This has to be done here rather than in pmls-paste, otherwise...
-  -- ... vanilla behavior of inserter filters set as ingredients occurs
-  if (entity.prototype.type == "inserter")
-  then
-    inserter_paste_logic(event, entity)
-    return
-  end
 
+  -- last_copied_from check to avoid doing work twice
+  if (_last_copied_from ~= "furnace")
+  then
+    -- This has to be done here rather than in pmls-paste, otherwise...
+    -- ... vanilla behavior of inserter filters set as ingredients occurs
+    if (entity.prototype.type == "inserter")
+    then
+      inserter_paste_logic(event, entity)
+      return
+    end
+  end
 
 
   -- https://lua-api.factorio.com/latest/classes/LuaEntityPrototype.html#logistic_mode
@@ -483,11 +538,11 @@ script.on_event(defines.events.on_entity_settings_pasted, function(event)
     -- https://lua-api.factorio.com/latest/classes/LuaLogisticPoint.html#add_section
     local new_section = logi_point.add_section()
     new_section.set_slot(1, {
-      value = { name = _item_name, quality = _item_quality_name },
+      value = { name = _item_product_prototypes[_current_product_index].name, quality = _quality_name },
       min = _MAGIC_NUMBER_BUFFER_REQUEST_QUANTITY
     })
 
     local floating_text = "[item=buffer-chest]" .. _item_flying_text_name .. " 50k"
-    create_flying_text(game.players[event.player_index], floating_text, entity.position)
+    create_flying_text(event, floating_text, entity.position)
   end
 end)

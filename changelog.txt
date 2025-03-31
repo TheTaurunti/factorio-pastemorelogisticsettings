@@ -1,4 +1,10 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.1.0
+Date: 2025-03-31
+  Features:
+    - Added support for multi-output recipes such as scrap recycling
+    - Added variant for combinator pasting which sets quality permutations for recipe outputs
+---------------------------------------------------------------------------------------------------
 Version: 1.0.9
 Date: 2025-03-29
   Features:
