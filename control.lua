@@ -213,6 +213,7 @@ local function inserter_paste_logic(event, inserter)
     end
 
     inserter.inserter_filter_mode = "whitelist"
+    inserter.use_filters = true
   end
 
   -- Check #1 - Can I work with this inserter?
@@ -501,7 +502,6 @@ end)
 
 -- https://lua-api.factorio.com/latest/events.html#on_entity_settings_pasted
 script.on_event(defines.events.on_entity_settings_pasted, function(event)
-  game.print("here")
   if (not _is_info_copied) then return end
 
 
