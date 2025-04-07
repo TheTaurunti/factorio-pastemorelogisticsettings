@@ -1,4 +1,10 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.1.1
+Date: 2025-04-06
+  Features:
+    - Changed "variant" behavior for combinator pasting to function in code only
+    - Added variant paste feature to buffer chests, to request all qualities of the output item
+---------------------------------------------------------------------------------------------------
 Version: 1.1.0
 Date: 2025-03-31
   Features:

@@ -14,6 +14,7 @@ local _item_flying_text_name = nil
 
 local _last_copied_from = nil
 
+local _paste_variants_tracker = {}
 
 local function clear_copied_info()
   _is_info_copied = false
@@ -27,6 +28,23 @@ local function clear_copied_info()
   _item_flying_text_name = nil
 
   _last_copied_from = nil
+  _paste_variants_tracker = {}
+end
+
+-- double underscore to mean "it would be wrong to access this elsewhere"
+local __qualities_in_game = nil
+local function get_qualities()
+  if (__qualities_in_game == nil)
+  then
+    local quals = {}
+    for qual_name, _ in pairs(prototypes.quality) do
+      if (qual_name ~= "quality-unknown") then
+        table.insert(quals, qual_name)
+      end
+    end
+    __qualities_in_game = quals
+  end
+  return __qualities_in_game
 end
 
 -- ================================
@@ -277,83 +295,135 @@ local function transport_belt_paste_logic(event, belt)
   set_enable_condition(event, belt, circuit_condition_comparator)
 end
 
+
+
+
+-- ========================================================================================
+-- ========================================================================================
+-- ========================================================================================
+-- ========================================================================================
+-- Instead of setting a field on the logi point, why don't I just track how many pastes?
+-- ========================================================================================
+-- ========================================================================================
+-- ========================================================================================
+-- ========================================================================================
+
+local function clear_logi_point_sections(logi_point)
+  for i = logi_point.sections_count, 1, -1 do
+    logi_point.remove_section(i)
+  end
+end
+
+local function get_next_paste_variant_number(type, max_variants)
+  if (not _paste_variants_tracker[type])
+  then
+    _paste_variants_tracker[type] = 0
+  end
+
+  local next = _paste_variants_tracker[type] + 1
+  next = (next > max_variants) and 1 or next
+  _paste_variants_tracker[type] = next
+  return next
+end
+
+-- signal_details is an array of { name="", type="<item/fluid>" }. Optionally include "amount" as field for each object.
+local function set_logi_point_section_signals(signal_details, section, quality_to_set, override_amount)
+  local index = 1
+  for _, ingred in ipairs(signal_details) do
+    section.set_slot(index, {
+      min = override_amount or ingred.amount or 1,
+      value = { type = ingred.type, name = ingred.name, quality = quality_to_set }
+    })
+    index = index + 1
+  end
+end
+
+
+local function set_logistic_point_values(logi_point, ingreds_or_products, optional_params)
+  optional_params = optional_params or {}
+  local quals = optional_params.qualities or { _quality_name }
+  local mult = optional_params.multiplier or 1
+  local override_amount = optional_params.override_amount
+
+  for _, qual_name in ipairs(quals) do
+    local qual_section = logi_point.add_section()
+    set_logi_point_section_signals(ingreds_or_products, qual_section, qual_name, override_amount)
+    qual_section.multiplier = mult
+  end
+end
+
 -- Setting combinator outputs as ingredients of the recipe
 local function combinator_paste_logic(event, combinator)
-  local _max_combinator_paste_variants = 3
-
-  local function _get_next_combinator_value_set(control_behavior)
-    local num_sections = control_behavior.sections_count
-    if (num_sections < 1) then return 1 end
-
-    local section_one_slot_one = control_behavior.get_section(1).get_slot(1)
-    if (section_one_slot_one == nil) then return 1 end
-    if (section_one_slot_one.value == nil) then return 1 end
-
-    local to_return = ((section_one_slot_one.value.name == "blueprint") and section_one_slot_one.min + 1) or 1
-    return (to_return > _max_combinator_paste_variants) and 1 or to_return
-  end
-  local function _set_signals_in_section(ingredients, section, quality_to_set, override_amount_as_one)
-    local index = 1
-
-    for _, ingred in ipairs(ingredients) do
-      -- Not limiting to items for 2 reasons:
-      --  1) Does not matter when setting filters
-      --  2) If using combinators as ingred reminders, fluids are useful to show.
-      section.set_slot(index, {
-        min = override_amount_as_one and 1 or ingred.amount,
-        value = { type = ingred.type, name = ingred.name, quality = quality_to_set }
-      })
-      index = index + 1
-    end
-  end
-
-  -- Begin function body here (util functions above)
   if (not _is_info_copied) then return end
+
+  -- Identify next pasting behavior to use
+  local max_combinator_paste_variants = 3
+  local next_value_set = get_next_paste_variant_number("combinator", max_combinator_paste_variants)
+
+  -- Set up params for generalized logi point
   local ingredients = (_has_ingredients and _recipe.prototype.ingredients) or {}
+  local inputs_outputs_to_use = {
+    [1] = ingredients,
+    [2] = ingredients,
+    [3] = _recipe.prototype.products
+  }
+  local params = {}
+  if (next_value_set > 1)
+  then
+    params.qualities = get_qualities()
+    params.override_amount = -15
+  end
 
   -- https://lua-api.factorio.com/stable/classes/LuaConstantCombinatorControlBehavior.html
   local combinator_control_behavior = combinator.get_control_behavior()
-  local next_value_set = _get_next_combinator_value_set(combinator_control_behavior)
+  clear_logi_point_sections(combinator_control_behavior)
+  set_logistic_point_values(combinator_control_behavior, inputs_outputs_to_use[next_value_set], params)
 
-  -- delete all sections
-  for i = combinator_control_behavior.sections_count, 1, -1 do
-    combinator_control_behavior.remove_section(i)
-  end
-
-  -- a metadata section for this mod
-  local mod_section = combinator_control_behavior.add_section()
-  mod_section.active = false
-  mod_section.set_slot(1, {
-    min = next_value_set,
-    value = {
-      type = "item",
-      name = "blueprint",
-      quality = _quality_name
-    }
-  })
-
-  -- Creating text here to simplify following code
-  local variant_text = "(" .. next_value_set .. "/" .. _max_combinator_paste_variants .. ")"
+  -- Text feedback
+  local variant_text = "(" .. next_value_set .. "/" .. max_combinator_paste_variants .. ")"
   local text = "[item=constant-combinator]" .. "[virtual-signal=signal-green]" .. variant_text
   create_flying_text(event, text, combinator.position)
-
-  -- base case, setting blank combinator to ingredients
-  if (next_value_set == 1) then
-    local ingred_section = combinator_control_behavior.add_section()
-    _set_signals_in_section(ingredients, ingred_section, _quality_name, false)
-    return
-  end
-
-  -- non-base case(s): get all quality permutations for inputs/outputs
-  local inputs_outputs_to_use = (next_value_set == 2 and ingredients) or _recipe.prototype.products
-  for qual_name, _ in pairs(prototypes.quality) do
-    if (qual_name ~= "quality-unknown") then
-      local qual_section = combinator_control_behavior.add_section()
-      _set_signals_in_section(inputs_outputs_to_use, qual_section, qual_name, true)
-      qual_section.multiplier = -15
-    end
-  end
 end
+
+
+local function buffer_chest_paste_logic(event, chest)
+  if (not _is_info_copied) then return end
+
+  -- Clear blocked slots
+  local chest_inventory = chest.get_inventory(defines.inventory.chest)
+  chest_inventory.set_bar()
+
+  -- Check for which paste type to do. Also clears existing requests
+  local max_buffer_paste_variants = 2
+  local next_value_set = get_next_paste_variant_number("buffer", max_buffer_paste_variants)
+
+  -- Set up params for generalized logi point
+  local item_set = { { name = _item_product_prototypes[_current_product_index].name, type = "item" } }
+  local params = {
+    override_amount = _MAGIC_NUMBER_BUFFER_REQUEST_QUANTITY
+  }
+  if (next_value_set > 1)
+  then
+    params.qualities = get_qualities()
+  end
+
+  -- Set logistic point values
+  local buffer_logistic_point = chest.get_requester_point()
+  clear_logi_point_sections(buffer_logistic_point)
+  set_logistic_point_values(buffer_logistic_point, item_set, params)
+
+  -- Text for feedback
+  local variant_text = "(" .. next_value_set .. "/" .. max_buffer_paste_variants .. ")"
+  local qual_text_tag = (
+    params.qualities and "[virtual-signal=signal-any-quality]"
+    or ("[quality=" .. _quality_name .. "]")
+  )
+  local item_text_tag = format_flying_text_item_name(_item_product_prototypes[_current_product_index].name)
+  local floating_text = "[item=buffer-chest]" .. item_text_tag .. qual_text_tag .. " 50k " .. variant_text
+  create_flying_text(event, floating_text, chest.position)
+end
+
+
 
 local function entity_with_recipe_copy_logic(entity)
   -- Returns "LuaRecipe, LuaQualityPrototype"
@@ -373,6 +443,7 @@ local function entity_with_recipe_copy_logic(entity)
     _current_product_index = math.fmod(_current_product_index, #_item_product_prototypes) + 1
     _item_flying_text_name = format_flying_text_item_name(_item_product_prototypes[_current_product_index].name,
       _quality_name)
+    _paste_variants_tracker = {}
     return true
   end
 
@@ -384,7 +455,6 @@ local function entity_with_recipe_copy_logic(entity)
     return false
   end
 
-
   -- Now record the information of the recipe
   local item_products = {}
   for _, product in ipairs(recipe.prototype.products) do
@@ -393,7 +463,10 @@ local function entity_with_recipe_copy_logic(entity)
       table.insert(item_products, prototypes.item[product.name])
     end
   end
+  if (#item_products == 0) then return false end
 
+
+  -- Everything is good for new info to copy. Make it happen!
   _is_info_copied = true
 
   _recipe = recipe
@@ -408,6 +481,7 @@ local function entity_with_recipe_copy_logic(entity)
 
 
   _last_copied_from = entity.type
+  _paste_variants_tracker = {}
 
   return true
 end
@@ -469,6 +543,14 @@ script.on_event("pmls-paste", function(event)
       inserter_paste_logic(event, entity)
       return
     end
+
+    -- https://lua-api.factorio.com/latest/classes/LuaEntityPrototype.html#logistic_mode
+    local logistic_mode = entity.prototype.logistic_mode
+    if (logistic_mode and (logistic_mode == "buffer"))
+    then
+      buffer_chest_paste_logic(event, entity)
+      return
+    end
   end
 
   if (entity.prototype.type == "constant-combinator")
@@ -519,30 +601,14 @@ script.on_event(defines.events.on_entity_settings_pasted, function(event)
       inserter_paste_logic(event, entity)
       return
     end
-  end
 
 
-  -- https://lua-api.factorio.com/latest/classes/LuaEntityPrototype.html#logistic_mode
-  local logistic_mode = entity.prototype.logistic_mode
-  if (logistic_mode and (logistic_mode == "buffer"))
-  then
-    local chest_inventory = entity.get_inventory(defines.inventory.chest)
-    chest_inventory.set_bar()
-
-    -- logistic request time. Clear existing then make mine.
-    local logi_point = entity.get_requester_point()
-    while (logi_point.sections_count and logi_point.sections_count > 0) do
-      logi_point.remove_section(1)
+    -- https://lua-api.factorio.com/latest/classes/LuaEntityPrototype.html#logistic_mode
+    local logistic_mode = entity.prototype.logistic_mode
+    if (logistic_mode and (logistic_mode == "buffer"))
+    then
+      buffer_chest_paste_logic(event, entity)
+      return
     end
-
-    -- https://lua-api.factorio.com/latest/classes/LuaLogisticPoint.html#add_section
-    local new_section = logi_point.add_section()
-    new_section.set_slot(1, {
-      value = { name = _item_product_prototypes[_current_product_index].name, quality = _quality_name },
-      min = _MAGIC_NUMBER_BUFFER_REQUEST_QUANTITY
-    })
-
-    local floating_text = "[item=buffer-chest]" .. _item_flying_text_name .. " 50k"
-    create_flying_text(event, floating_text, entity.position)
   end
 end)
